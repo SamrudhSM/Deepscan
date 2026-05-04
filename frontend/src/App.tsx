@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { UploadCloud, Shield, Activity, HardDrive, FileAudio, X, PlayCircle, AlertTriangle, CheckCircle2, Clock, Fingerprint, Mic, Square, Radio, Download, Phone, ShieldCheck, CheckSquare } from 'lucide-react';
+import { UploadCloud, Shield, Activity, HardDrive, FileAudio, X, PlayCircle, AlertTriangle, CheckCircle2, Clock, Fingerprint, Mic, Square, Radio, Download, CheckSquare } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import './App.css';
