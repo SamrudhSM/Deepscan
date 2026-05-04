@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import sys
 import faiss
+import hashlib
 
 # Ensure local imports work correctly when running from root
 sys.path.append(os.path.join(os.path.dirname(__file__)))
@@ -53,9 +54,11 @@ print("✅ API Ready")
 async def detect_audio(file: UploadFile = File(...)):
     temp_path = f"temp_{file.filename}"
     try:
-        # Save uploaded file temporarily to process through librosa
+        # Save uploaded file temporarily and hash it
+        content = await file.read()
+        sha256_hash = hashlib.sha256(content).hexdigest()
         with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(content)
             
         # 1. Extract DNA
         dna_flat, dna_seq = extractor.get_dna(temp_path)
@@ -66,6 +69,7 @@ async def detect_audio(file: UploadFile = File(...)):
             if len(dna_tensor.shape) == 2:
                 dna_tensor = dna_tensor.unsqueeze(0) # (1, 50, 768)
             prediction = model(dna_tensor).item()
+            temporal_variance = float(np.std(dna_seq))
             
         # 3. FAISS Memory Search
         faiss_result = None
@@ -96,7 +100,9 @@ async def detect_audio(file: UploadFile = File(...)):
             "filename": file.filename,
             "verdict": label,
             "confidence": confidence,
-            "faiss_memory": faiss_result
+            "faiss_memory": faiss_result,
+            "file_hash": sha256_hash,
+            "temporal_variance": temporal_variance
         }
         
     finally:
@@ -129,6 +135,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     if len(dna_tensor.shape) == 2:
                         dna_tensor = dna_tensor.unsqueeze(0)
                     prediction = model(dna_tensor).item()
+                    temporal_variance = float(np.std(dna_seq))
                 
                 # 3. FAISS Memory Search
                 faiss_result = None
@@ -154,7 +161,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "verdict": label,
                     "confidence": confidence,
-                    "faiss_memory": faiss_result
+                    "faiss_memory": faiss_result,
+                    "file_hash": None,
+                    "temporal_variance": temporal_variance
                 })
             except Exception as e:
                 print(f"⚠️ Error processing audio chunk: {e}")
