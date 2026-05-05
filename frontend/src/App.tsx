@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { UploadCloud, Shield, Activity, HardDrive, FileAudio, X, PlayCircle, AlertTriangle, CheckCircle2, Clock, Fingerprint, Mic, Square, Radio, Download, CheckSquare } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import WaveSurfer from 'wavesurfer.js';
+import { motion } from 'framer-motion';
 import './App.css';
 
 interface FaissMemory {
@@ -46,6 +48,13 @@ function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  
+  const waveformRef = useRef<HTMLDivElement>(null);
+  const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
 
   // Cleanup object URL and Live Stream
   useEffect(() => {
@@ -56,6 +65,8 @@ function App() {
   }, [audioUrl]);
 
   const stopLiveAnalysis = () => {
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (audioContextRef.current) audioContextRef.current.close();
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
@@ -76,6 +87,50 @@ function App() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      audioContextRef.current = audioCtx;
+      analyserRef.current = analyser;
+
+      const draw = () => {
+        if (!canvasRef.current || !analyserRef.current) return;
+        animationFrameRef.current = requestAnimationFrame(draw);
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        
+        const bufferLength = analyserRef.current.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        analyserRef.current.getByteTimeDomainData(dataArray);
+        
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#8b5cf6';
+        ctx.beginPath();
+        
+        const sliceWidth = canvas.width * 1.0 / bufferLength;
+        let x = 0;
+        
+        for (let i = 0; i < bufferLength; i++) {
+          const v = dataArray[i] / 128.0;
+          const y = v * canvas.height / 2;
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+          x += sliceWidth;
+        }
+        ctx.lineTo(canvas.width, canvas.height / 2);
+        ctx.stroke();
+      };
+      draw();
       
       const socket = new WebSocket(`${WS_URL}/ws/detect`);
       socketRef.current = socket;
@@ -148,6 +203,25 @@ function App() {
       setError(null);
     }
   };
+
+  useEffect(() => {
+    if (waveformRef.current && audioUrl && !isLiveMode) {
+      wavesurferRef.current = WaveSurfer.create({
+        container: waveformRef.current,
+        waveColor: '#8b5cf6',
+        progressColor: '#c4b5fd',
+        cursorColor: '#fca5a5',
+        barWidth: 2,
+        barGap: 2,
+        barRadius: 2,
+        height: 60,
+      });
+      wavesurferRef.current.load(audioUrl);
+      return () => {
+        wavesurferRef.current?.destroy();
+      };
+    }
+  }, [audioUrl, isLiveMode]);
 
   const handleUpload = async () => {
     if (!file) return;
@@ -380,9 +454,7 @@ function App() {
             <div className="live-status">
               {isRecording ? (
                 <div className="recording-indicator">
-                  <div className="visualizer">
-                    <div className="bar"></div><div className="bar"></div><div className="bar"></div><div className="bar"></div><div className="bar"></div>
-                  </div> Live Analysis Active
+                  <canvas ref={canvasRef} style={{ width: '150px', height: '30px', marginRight: '10px' }}></canvas> Live Analysis Active
                 </div>
               ) : (
                 <div className="standby-indicator">
@@ -408,7 +480,7 @@ function App() {
               <div className="live-readout" style={{marginTop: '2rem', textAlign: 'center', minHeight: '3rem'}}>
                 {liveVerdict && liveConfidence ? (
                   <div style={{ fontSize: '1.5rem', fontWeight: 700, color: liveVerdict === 'DEEPFAKE' ? '#fca5a5' : '#6ee7b7' }}>
-                    {liveVerdict} ({(liveConfidence * 100).toFixed(1)}%)
+                    {liveVerdict} (<span className="font-mono">{(liveConfidence * 100).toFixed(1)}%</span>)
                   </div>
                 ) : (
                   <div style={{color: 'var(--text-secondary)'}}>Waiting for audio stream...</div>
@@ -478,8 +550,11 @@ function App() {
             </div>
             
             {audioUrl && (
-              <div className="audio-player-container">
-                <audio controls src={audioUrl} className="custom-audio-player" />
+              <div className="audio-player-container" style={{display: 'flex', alignItems: 'center', gap: '1rem', width: '100%', padding: '1rem'}}>
+                <button className="btn-primary" style={{padding: '0.75rem', width: 'auto', borderRadius: '50%'}} onClick={() => wavesurferRef.current?.playPause()}>
+                  <PlayCircle size={24} />
+                </button>
+                <div ref={waveformRef} style={{flex: 1}}></div>
               </div>
             )}
           </div>
@@ -503,13 +578,13 @@ function App() {
             <div className="loading-step-text">{loadingStep}</div>
           </div>
         ) : result ? (
-          <div className="result-container animate-fade-in">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="result-container">
             <div className={`verdict-card ${result.verdict === 'DEEPFAKE' ? 'verdict-fake' : 'verdict-real'}`}>
               <div className="verdict-title">
                 {result.verdict === 'DEEPFAKE' ? <AlertTriangle size={24} /> : <CheckCircle2 size={24} />}
                 {result.verdict === 'DEEPFAKE' ? 'AI Voice Detected' : 'Real Human Voice'}
               </div>
-              <div className="confidence-score">
+              <div className="confidence-score font-mono">
                 {(result.confidence * 100).toFixed(1)}%
               </div>
               <p style={{ color: 'var(--text-secondary)' }}>
@@ -519,7 +594,7 @@ function App() {
 
             {/* Forensic Breakdown */}
             <div className="breakdown-grid">
-              <div className="breakdown-card">
+              <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: 0.2 }} className="breakdown-card">
                 <div className="breakdown-icon"><Activity size={18}/></div>
                 <div className="breakdown-info">
                   <div className="breakdown-label">Acoustic Consistency</div>
@@ -530,8 +605,8 @@ function App() {
                     }}></div>
                   </div>
                 </div>
-              </div>
-              <div className="breakdown-card">
+              </motion.div>
+              <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: 0.4 }} className="breakdown-card">
                 <div className="breakdown-icon"><Fingerprint size={18}/></div>
                 <div className="breakdown-info">
                   <div className="breakdown-label">Temporal Artifacts</div>
@@ -539,11 +614,11 @@ function App() {
                     {result.verdict === 'DEEPFAKE' ? (result.confidence > 0.85 ? 'HIGH' : 'MEDIUM') : 'LOW'}
                   </div>
                 </div>
-              </div>
+              </motion.div>
             </div>
 
             {result.faiss_memory && (
-              <div className="memory-card">
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.6 }} className="memory-card">
                 <div className="memory-header">
                   <HardDrive size={20} /> FAISS Forensic Memory
                 </div>
@@ -555,18 +630,18 @@ function App() {
                 </div>
                 <div className="memory-row">
                   <span className="memory-label">Acoustic Similarity:</span>
-                  <span className="memory-value">
+                  <span className="memory-value font-mono">
                     {result.faiss_memory.similarity.toFixed(1)}%
                   </span>
                 </div>
-              </div>
+              </motion.div>
             )}
 
             
             <button className="btn-secondary" style={{width: '100%', marginTop: '1rem', display: 'flex', justifyContent: 'center', gap: '0.5rem', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--panel-border)', padding: '0.75rem', borderRadius: '12px', color: 'var(--text-primary)', fontWeight: 600, cursor: 'pointer', transition: 'background 0.2s'}} onClick={downloadReport} onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'} onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'}>
               <Download size={18} /> Download Forensic Report
             </button>
-          </div>
+          </motion.div>
         ) : (
           <button 
             className="btn-primary" 
